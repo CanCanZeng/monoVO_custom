@@ -1,7 +1,7 @@
 %% read input image sequence and ground truth
 
 images = imageDatastore(fullfile(toolboxdir('vision'), 'visiondata', ...
-    'NewTsukuba');
+    'NewTsukuba'));
 
 % create the camera parameters object using camera intrinsics from the
 % New Tsukuba dataset.
@@ -82,7 +82,7 @@ title('Camera Trajectory');
 % 读取和显示图片
 viewId = 2;
 Irgb = readimage(images, viewId);
-setp(player, Irgb);
+step(player, Irgb);
 
 % 将图片转换成灰度图并去畸变
 I = undistortImage(rgb2gray(Irgb), cameraParams);
@@ -120,7 +120,7 @@ prevPoints = currPoints;
 for viewId = 3:  15
     % 读取和显示下一帧图片
     Irgb = readimage(images, viewId);
-    setp(player, Irgb);
+    step(player, Irgb);
     
     % 转换成灰度图并去畸变
     I = undistortImage(rgb2gray(Irgb), cameraParams);
@@ -184,9 +184,65 @@ for viewId = 3:  15
     prevPoints     = currPoints;
 end
 
+for viewId = 16 : numel(images.Files)
+    Irgb = readimage(images, viewId);
+    step(player, Irgb);
+    
+    I = undistortImage(rgb2gray(Irgb), cameraParams);
+    
+    [currPoints, currFeatures, indexPairs] = helperDetectAndMatchFeatures(...
+        prevFeatures, I);
+    
+    [worldPoints, imagePoints] = helperFind3Dto2DCorrespondences(vSet,...
+        cameraParams, indexPairs, currPoints);
+    
+    warningstate = warning('off', 'vision:ransac:maxTrialsReached');
+    
+    [orient, loc] = estimateWorldCameraPose(imagePoints, worldPoints, ...
+        cameraParams, 'MaxNumTrials', 5000, 'Confidence', 99.99, ...
+        'MaxReprojectionError', 0.8);
+    
+    warning(warningstate);
+    
+    vSet = addView(vSet, viewId, 'Points', currPoints, 'Orientation', orient,...
+        'Location', loc);
+    vSet = addConnection(vSet, viewId-1, viewId, 'Matches', indexPairs);
+    
+    % 前面都是一般流程,只有这里,因为每次都做优化太慢了,所以每隔帧优化一次
+    if mod(viewId, 7) ==0
+        % 只在最近的 15 帧里面找可以跟踪到的点
+        windowSize = 15;
+        startFrame = max(1, viewId - windowSize);
+        tracks = findTracks(vSet, startFrame:viewId);
+        camPoses = poses(vSet, startFrame:viewId);
+        [xyzPoints, reprojErrors] = triangulateMultiview(tracks, camPoses,...
+            cameraParams);
+        
+        % 令前两帧固定,以保持尺度不变
+        fixedIds = [startFrame, startFrame+1];
+        
+        % 把那些重投影误差比较大的都排除掉
+        idx = reprojErrors < 2;
+   
+        [~, camPoses] = bundleAdjustment(xyzPoints(idx, :), tracks(idx),...
+            camPoses, cameraParams, 'FixedViewIDs', fixedIds, ...
+            'PointsUndistorted', true, 'AbsoluteTolerance', 1e-9,...
+            'RelativeTolerance', 1e-9, 'MaxIterations', 300);
+        
+        vSet = updateView(vSet, camPoses);
+    end
+    
+    helperUpdateCameraPlots(viewId, camEstimated, camActual, poses(vSet),...
+        groundTruthPoses);
+    helperUpdateCameraTrajectories(viewId, trajectoryEstimated, ...
+        trajectoryActual, poses(vSet), groundTruthPoses);
+    
+    prevI = I;
+    prevFeatures = currFeatures;
+    prevPoints     = currPoints;
+end
 
-
-
+hold off
 
 
 
